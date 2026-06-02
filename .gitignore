@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+
+# Environment
+.env
+
+# Database
+*.db
+
+# Telemetry data
+*.parquet
+
+# FastF1 cache
+pitwall-backend/data/fastf1-cache/
+
+# VS Code
+.vscode/
+
+# Logs
+*.log

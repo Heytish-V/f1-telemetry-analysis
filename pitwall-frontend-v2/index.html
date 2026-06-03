@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PitWall — F1 Telemetry Analytics</title>
+  <meta name="description" content="PitWall compares F1 driver telemetry lap-by-lap, isolating exactly where and how time is gained or lost across braking, corner entry, apex, and exit.">
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Barlow+Condensed:wght@300;400;500;600;700;800&family=Barlow:wght@300;400;500&display=swap" rel="stylesheet">
+
+  <!-- CSS — loaded in dependency order -->
+  <link rel="stylesheet" href="css/layout.css">
+  <link rel="stylesheet" href="css/components.css">
+  <link rel="stylesheet" href="css/analysis.css">
+
+  <!--
+    ARCHITECTURE NOTE: This file is a pure static shell.
+    - No inline JavaScript anywhere.
+    - No onclick= attributes — all events attached in JS modules.
+    - All dynamic content is injected by the page/component modules.
+    - The <script type="module"> at the bottom bootstraps the entire app.
+  -->
+</head>
+<body>
+
+<!-- ── LOADING OVERLAY ─────────────────────────────────────────────── -->
+<!--
+  Shown during initial page load AND during analysis job polling.
+  loader.js manages show/hide via the .hidden class.
+-->
+<div class="loading-overlay" id="loader">
+  <div class="loading-logo">PITWALL</div>
+  <div class="loading-bar-wrap">
+    <div class="loading-bar" id="loader-bar"></div>
+  </div>
+  <div class="loading-label" id="loader-msg">initialising engine</div>
+</div>
+
+<!-- ── CHART TOOLTIP ───────────────────────────────────────────────── -->
+<!-- Positioned via JS on mousemove; always present in DOM -->
+<div class="tooltip" id="tooltip"></div>
+
+<!-- ── NAVIGATION ─────────────────────────────────────────────────── -->
+<nav>
+  <a class="nav-logo" id="nav-logo" href="#">
+    <div class="dot"></div>
+    PITWALL
+  </a>
+  <div class="nav-links">
+    <button class="nav-link" id="nav-overview">Overview</button>
+    <button class="nav-link" id="nav-sessions">Sessions</button>
+    <!--
+      The Analysis nav link is hidden until the user first runs an analysis.
+      router.js reveals it when navigating to the analysis page.
+    -->
+    <button class="nav-link" id="nav-analysis" style="display:none">Analysis</button>
+  </div>
+  <button class="nav-cta" id="nav-cta">Open Session →</button>
+</nav>
+
+
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<!-- PAGE: LANDING                                                      -->
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<div class="page active" id="page-landing">
+
+  <!-- Hero -->
+  <div class="hero">
+    <div class="hero-grid-bg"></div>
+    <svg class="hero-track-svg" viewBox="0 0 400 400" fill="none">
+      <path d="M80,200 C80,120 140,60 220,60 C300,60 360,120 360,200 C360,280 300,340 220,340 C160,340 110,310 90,270 L60,270 C40,270 30,260 30,240 C30,220 40,210 60,210 L70,210 Z"
+            stroke="white" stroke-width="18" stroke-linecap="round"/>
+      <circle cx="220" cy="60"  r="6" fill="white"/>
+      <circle cx="360" cy="200" r="6" fill="white"/>
+      <circle cx="60"  cy="240" r="6" fill="white"/>
+      <path d="M200,60 L240,60" stroke="#E8331A" stroke-width="4"/>
+    </svg>
+    <div class="hero-content">
+      <div class="hero-eyebrow">Telemetry Analytics Engine</div>
+      <h1 class="hero-title">
+        DIAGNOSE<br>
+        <span class="accent">EVERY</span>
+        <span class="line2">TENTH</span>
+      </h1>
+      <p class="hero-sub">
+        Not just faster — <em>why</em> faster. PitWall compares F1 driver telemetry
+        lap-by-lap, isolating exactly where and how time is gained or lost across
+        braking, corner entry, apex, and exit.
+      </p>
+      <div class="hero-actions">
+        <button class="btn-primary" id="hero-analyse-btn">Analyse a Session →</button>
+        <button class="btn-ghost"   id="hero-demo-btn">View Demo</button>
+      </div>
+      <div class="hero-stats">
+        <div class="hero-stat">
+          <div class="hero-stat-num red">1,000</div>
+          <div class="hero-stat-label">sample points / lap</div>
+        </div>
+        <div class="hero-stat">
+          <div class="hero-stat-num">7</div>
+          <div class="hero-stat-label">telemetry detectors</div>
+        </div>
+        <div class="hero-stat">
+          <div class="hero-stat-num">2</div>
+          <div class="hero-stat-label">audience modes</div>
+        </div>
+        <div class="hero-stat">
+          <div class="hero-stat-num teal">2018–</div>
+          <div class="hero-stat-label">historical data</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Features -->
+  <div class="section">
+    <div class="section-label">Engine Capabilities</div>
+    <h2 class="section-title">The diagnostic layer<br>beneath the stopwatch</h2>
+    <div class="features-grid stagger">
+      <div class="feature-card">
+        <div class="feature-icon">// alignment_engine.py</div>
+        <h3 class="feature-title">Distance-Grid Alignment</h3>
+        <p class="feature-desc">Telemetry from two drivers can't be overlaid by timestamp. The engine interpolates all channels onto 1,000 equally-spaced distance samples, enabling true spatial comparison regardless of lap start position or fuel load.</p>
+        <span class="feature-tag">scipy.interp1d</span>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">// delta_calculator.py</div>
+        <h3 class="feature-title">Cumulative Delta Time</h3>
+        <p class="feature-desc">Reconstructs time from velocity at each distance point: Δt = Σ(ds/v). The resulting 1,000-point array reveals exactly where on the lap a gap opens, peaks, and closes — not just the final margin.</p>
+        <span class="feature-tag">numpy vectorised</span>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">// detector_pipeline.py</div>
+        <h3 class="feature-title">7 Insight Detectors</h3>
+        <p class="feature-desc">Braking point, trail braking, corner exit speed, throttle application, traction zone ramp rate, DRS efficiency, and sector gap detectors each score and quantify their contribution to the total lap delta.</p>
+        <span class="feature-tag">heuristic + statistical</span>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">// narrative_gen.py</div>
+        <h3 class="feature-title">Dual-Audience Narratives</h3>
+        <p class="feature-desc">Every insight produces two outputs simultaneously: a casual narrative for fans and an analyst breakdown with raw channel values, confidence score, and statistical consistency.</p>
+        <span class="feature-tag">casual + analyst mode</span>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">// ensemble_align.py</div>
+        <h3 class="feature-title">Ensemble Lap Selection</h3>
+        <p class="feature-desc">Selects 3–5 representative laps per driver filtered by tire age, track condition, and time window. Insights are reported only when consistent across ≥60% of the representative set.</p>
+        <span class="feature-tag">quality-gated</span>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">// storage.py</div>
+        <h3 class="feature-title">Parquet + DuckDB Storage</h3>
+        <p class="feature-desc">All telemetry stored as columnar Parquet files queryable via DuckDB SQL — no database server required. A full race weekend fits in under 200MB. Pre-computed insight bundles reduce cold-query latency to under 200ms.</p>
+        <span class="feature-tag">zero-server architecture</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delta Teaser -->
+  <div class="delta-teaser">
+    <div>
+      <div class="section-label">Delta Time Graph</div>
+      <h2 class="section-title" style="font-size:40px">Where the tenth<br>lives on the lap</h2>
+      <p style="color:var(--text2); font-size:15px; line-height:1.7; margin-bottom:24px;">
+        The engine's primary output: cumulative time gap plotted against track distance.
+        Every inflection reveals a maneuver — a late braking point that gained 0.04s,
+        a slower corner exit that gave it back.
+      </p>
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <div style="display:flex; gap:12px; align-items:center; font-size:14px; color:var(--text2)">
+          <div style="width:16px;height:2px;background:var(--ver);border-radius:1px;flex-shrink:0"></div>
+          VER ahead — positive delta
+        </div>
+        <div style="display:flex; gap:12px; align-items:center; font-size:14px; color:var(--text2)">
+          <div style="width:16px;height:0;border-top:2px dashed var(--ham);flex-shrink:0"></div>
+          HAM ahead — negative delta
+        </div>
+        <div style="display:flex; gap:12px; align-items:center; font-size:14px; color:var(--text2)">
+          <div style="width:12px;height:12px;border-radius:50%;background:var(--red2);flex-shrink:0"></div>
+          Insight detected — click to drill down
+        </div>
+      </div>
+    </div>
+    <div>
+      <svg viewBox="0 0 440 240" width="100%" class="chart-svg">
+        <defs>
+          <linearGradient id="delta-fill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%"   stop-color="#3B9EFF" stop-opacity="0.2"/>
+            <stop offset="100%" stop-color="#3B9EFF" stop-opacity="0"/>
+          </linearGradient>
+          <linearGradient id="delta-fill-neg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%"   stop-color="#00C2A0" stop-opacity="0"/>
+            <stop offset="100%" stop-color="#00C2A0" stop-opacity="0.15"/>
+          </linearGradient>
+        </defs>
+        <!-- grid -->
+        <line x1="30" y1="40"  x2="430" y2="40"  stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+        <line x1="30" y1="120" x2="430" y2="120" stroke="rgba(255,255,255,0.1)"  stroke-width="1"/>
+        <line x1="30" y1="200" x2="430" y2="200" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+        <!-- sector dividers -->
+        <line x1="180" y1="30" x2="180" y2="215" stroke="rgba(255,255,255,0.06)" stroke-width="1" stroke-dasharray="4 4"/>
+        <line x1="310" y1="30" x2="310" y2="215" stroke="rgba(255,255,255,0.06)" stroke-width="1" stroke-dasharray="4 4"/>
+        <text x="105" y="225" text-anchor="middle" fill="#4A5568" font-family="DM Mono,monospace" font-size="10" letter-spacing="2">S1</text>
+        <text x="245" y="225" text-anchor="middle" fill="#4A5568" font-family="DM Mono,monospace" font-size="10" letter-spacing="2">S2</text>
+        <text x="370" y="225" text-anchor="middle" fill="#4A5568" font-family="DM Mono,monospace" font-size="10" letter-spacing="2">S3</text>
+        <!-- y axis -->
+        <text x="25" y="44"  text-anchor="end" fill="#4A5568" font-family="DM Mono,monospace" font-size="9">+0.2</text>
+        <text x="25" y="124" text-anchor="end" fill="#4A5568" font-family="DM Mono,monospace" font-size="9">0</text>
+        <text x="25" y="204" text-anchor="end" fill="#4A5568" font-family="DM Mono,monospace" font-size="9">-0.2</text>
+        <!-- fills -->
+        <path d="M30,120 C60,114 90,100 120,88 C140,79 155,72 180,75 L180,120 Z" fill="url(#delta-fill)"/>
+        <path d="M180,75 C210,78 230,120 260,148 C275,160 290,165 310,158 L310,120 Z" fill="url(#delta-fill-neg)"/>
+        <path d="M310,158 C330,150 360,132 390,118 L390,120 Z" fill="url(#delta-fill)"/>
+        <!-- line -->
+        <path d="M30,120 C60,114 90,100 120,88 C140,79 155,72 180,75 C210,78 230,120 260,148 C275,160 290,165 310,158 C330,150 360,132 390,118 L430,110"
+              fill="none" stroke="#3B9EFF" stroke-width="2.5" stroke-linecap="round"/>
+        <!-- insight markers -->
+        <circle cx="110" cy="88"  r="5" fill="#E8331A" opacity="0.9"/>
+        <circle cx="258" cy="148" r="5" fill="#00C2A0" opacity="0.9"/>
+        <circle cx="355" cy="128" r="5" fill="#E8331A" opacity="0.9"/>
+        <text x="110" y="79"  text-anchor="middle" fill="#E8331A" font-family="DM Mono,monospace" font-size="9">T4 +0.08s</text>
+        <text x="258" y="160" text-anchor="middle" fill="#00C2A0" font-family="DM Mono,monospace" font-size="9">T8 −0.05s</text>
+        <text x="355" y="120" text-anchor="middle" fill="#E8331A" font-family="DM Mono,monospace" font-size="9">T15 +0.03s</text>
+        <text x="432" y="114" fill="#3B9EFF" font-family="DM Mono,monospace" font-size="10" font-weight="500">VER</text>
+      </svg>
+    </div>
+  </div>
+
+  <!-- CTA -->
+  <div class="section" style="text-align:center;">
+    <div class="section-label" style="justify-content:center">Get Started</div>
+    <h2 class="section-title" style="margin-bottom:24px">Pick a session.<br>Pick two drivers.</h2>
+    <p style="color:var(--text2); max-width:440px; margin:0 auto 36px; font-size:16px; line-height:1.7;">
+      Every race from 2018 onward. Qualifying, race, practice. The engine does the rest.
+    </p>
+    <button class="btn-primary" style="font-size:17px; padding:16px 48px;" id="landing-cta-btn">
+      Open Session Selector →
+    </button>
+  </div>
+
+  <footer style="border-top:1px solid var(--border); padding:28px 60px; display:flex; justify-content:space-between; align-items:center;">
+    <span style="font-family:var(--font-display); font-size:18px; font-weight:700; letter-spacing:0.08em;">PITWALL</span>
+    <span style="font-family:var(--font-mono); font-size:10px; letter-spacing:0.1em; color:var(--text3);">POWERED BY FASTF1 · OPENF1 · ERGAST</span>
+    <span style="font-family:var(--font-mono); font-size:10px; letter-spacing:0.1em; color:var(--text3);">2018 – 2024 SEASONS</span>
+  </footer>
+</div><!-- /page-landing -->
+
+
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<!-- PAGE: SESSION SELECTOR                                             -->
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<div class="page" id="page-selector">
+  <div class="selector-header">
+    <div class="breadcrumb">PITWALL <span>/ Sessions</span></div>
+    <h1 class="selector-title display">SELECT SESSION</h1>
+  </div>
+
+  <div class="selector-body">
+    <!-- Sidebar filters -->
+    <div class="selector-sidebar">
+      <div class="sidebar-section" id="sidebar-years">
+        <div class="sidebar-label">Season</div>
+        <!-- Populated by selector.js -->
+      </div>
+      <div class="sidebar-section" id="sidebar-session-types">
+        <div class="sidebar-label">Session type</div>
+        <!-- Populated by selector.js -->
+      </div>
+      <div class="sidebar-section" id="sidebar-circuit-types">
+        <div class="sidebar-label">Circuit type</div>
+        <!-- Populated by selector.js -->
+      </div>
+    </div>
+
+    <!-- Main area -->
+    <div class="selector-main">
+      <div style="margin-bottom:20px; display:flex; align-items:center; justify-content:space-between;">
+        <span id="race-count-label" style="font-family:var(--font-mono); font-size:11px; letter-spacing:0.1em; color:var(--text3);"></span>
+        <input id="race-search" class="race-search" placeholder="Search circuits…" autocomplete="off">
+      </div>
+
+      <!-- Race cards injected here by selector.js -->
+      <div class="race-grid stagger" id="race-grid"></div>
+
+      <!-- Driver selector — hidden until a race is clicked -->
+      <div class="driver-selector" id="driver-selector" style="display:none;">
+        <div style="margin-bottom:20px;">
+          <div class="panel-label">SELECT TWO DRIVERS TO COMPARE</div>
+          <div class="driver-grid stagger" id="driver-grid"></div>
+        </div>
+        <div class="compare-btn-wrap">
+          <div class="compare-selected">
+            <span class="driver-a" id="sel-a-name">—</span>
+            <span class="vs">vs</span>
+            <span class="driver-b" id="sel-b-name">—</span>
+          </div>
+          <button class="btn-primary" id="compare-btn" disabled>
+            Run Analysis →
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div><!-- /page-selector -->
+
+
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<!-- PAGE: ANALYSIS DASHBOARD                                           -->
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<div class="page" id="page-analysis">
+
+  <!-- Secondary header -->
+  <div class="analysis-header">
+    <div class="analysis-breadcrumb">
+      <span class="clickable" id="breadcrumb-sessions">Sessions</span>
+      <span class="sep">/</span>
+      <span id="analysis-race-label"    class="current">—</span>
+      <span class="sep">/</span>
+      <span id="analysis-session-label" class="current">—</span>
+      <span class="sep">/</span>
+      <span id="analysis-drivers-label" class="current" style="color:var(--text)">—</span>
+    </div>
+    <button class="export-btn" id="export-btn">↓ Export</button>
+    <div class="mode-toggle">
+      <button class="mode-opt active" id="mode-casual">Casual</button>
+      <button class="mode-opt"        id="mode-analyst">Analyst</button>
+    </div>
+  </div>
+
+  <!-- 3-column body -->
+  <div class="analysis-body">
+
+    <!-- LEFT PANEL -->
+    <div class="left-panel">
+      <div class="panel-label">LAP SUMMARY</div>
+      <div class="lap-summary" id="lap-summary-card"></div>
+
+      <div class="panel-label" style="margin-top:16px;">
+        SECTOR BREAKDOWN
+        <span id="sector-count-label" style="color:var(--text3);">3 SECTORS</span>
+      </div>
+      <div class="sector-breakdown" id="sector-breakdown"></div>
+
+      <div class="panel-label" style="margin-top:16px;">TRACK POSITION MAP</div>
+      <div class="chart-card" id="track-map-card">
+        <div class="chart-body" style="padding:10px; display:flex; justify-content:center; align-items:center; background:rgba(0,0,0,0.15);">
+          <svg id="track-svg" viewBox="0 0 300 240" width="100%" height="200" class="chart-svg"></svg>
+        </div>
+      </div>
+
+      <div class="panel-label" style="margin-top:16px;">TOP INSIGHTS</div>
+      <div class="insight-list" id="insight-list"></div>
+    </div>
+
+    <!-- CENTER PANEL — Charts via tabs -->
+    <div class="center-panel">
+      <div class="tab-bar">
+        <button class="tab active" data-tab="delta">Delta Time</button>
+        <button class="tab"        data-tab="speed">Speed Trace</button>
+        <button class="tab"        data-tab="inputs">Inputs</button>
+        <button class="tab"        data-tab="sectors">Sectors</button>
+      </div>
+
+      <!-- Delta Time tab -->
+      <div class="tab-panel active" id="tab-delta">
+        <div class="chart-card">
+          <div class="chart-header">
+            <span class="chart-title">Cumulative Delta Time</span>
+            <div class="chart-legend">
+              <div class="legend-item">
+                <div class="legend-line" style="background:var(--ver)"></div>
+                <span id="legend-a">Driver A ahead</span>
+              </div>
+              <div class="legend-item">
+                <div class="legend-line" style="background:var(--ham)"></div>
+                <span id="legend-b">Driver B ahead</span>
+              </div>
+            </div>
+          </div>
+          <div class="chart-body">
+            <svg id="delta-svg" viewBox="0 0 700 200" width="100%" class="chart-svg"></svg>
+          </div>
+        </div>
+        <!-- Analyst-only metadata row -->
+        <div class="chart-card analyst-only" id="analyst-delta-note">
+          <div class="chart-body" style="padding:14px 16px;">
+            <span style="font-family:var(--font-mono); font-size:11px; color:var(--text3);">
+              Showing median of 5 representative laps ·
+              Laps: <span style="color:var(--text2)" id="rep-laps-a">—</span> (A) /
+              <span style="color:var(--text2)" id="rep-laps-b">—</span> (B) ·
+              Consistency threshold: 60%
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Speed Trace tab -->
+      <div class="tab-panel" id="tab-speed">
+        <div class="chart-card">
+          <div class="chart-header">
+            <span class="chart-title">Speed Trace Overlay</span>
+            <div class="chart-legend">
+              <div class="legend-item"><div class="legend-line" style="background:var(--ver)"></div><span id="speed-legend-a">A</span></div>
+              <div class="legend-item"><div class="legend-line" style="background:var(--ham); opacity:0.7"></div><span id="speed-legend-b">B</span></div>
+            </div>
+          </div>
+          <div class="chart-body">
+            <svg id="speed-svg" viewBox="0 0 700 200" width="100%" class="chart-svg"></svg>
+          </div>
+        </div>
+        <div class="chart-card" style="margin-top:14px;">
+          <div class="chart-header"><span class="chart-title">Throttle / Brake Channels</span></div>
+          <div class="chart-body">
+            <svg id="throttle-svg" viewBox="0 0 700 120" width="100%" class="chart-svg"></svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- Inputs tab -->
+      <div class="tab-panel" id="tab-inputs">
+        <div class="chart-card">
+          <div class="chart-header"><span class="chart-title">Throttle Application</span></div>
+          <div class="chart-body">
+            <svg id="throttle2-svg" viewBox="0 0 700 160" width="100%" class="chart-svg"></svg>
+          </div>
+        </div>
+        <div class="chart-card" style="margin-top:14px;">
+          <div class="chart-header"><span class="chart-title">Brake Pressure</span></div>
+          <div class="chart-body">
+            <svg id="brake-svg" viewBox="0 0 700 120" width="100%" class="chart-svg"></svg>
+          </div>
+        </div>
+        <div class="chart-card analyst-only" id="analyst-gear-card" style="margin-top:14px;">
+          <div class="chart-header"><span class="chart-title">Gear Selection</span></div>
+          <div class="chart-body">
+            <svg id="gear-svg" viewBox="0 0 700 100" width="100%" class="chart-svg"></svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sectors (waterfall) tab -->
+      <div class="tab-panel" id="tab-sectors">
+        <div class="chart-card">
+          <div class="chart-header"><span class="chart-title">Sector Waterfall</span></div>
+          <div class="chart-body">
+            <svg id="waterfall-svg" viewBox="0 0 700 300" width="100%" class="chart-svg"></svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- Telemetry scrubber slider — visible across all tabs -->
+      <div class="chart-card telemetry-scrubber-card" style="margin-top:14px;">
+        <div class="scrubber-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding:0 4px;">
+          <span style="font-family:var(--font-mono); font-size:11px; color:var(--text3); letter-spacing:0.1em;">TELEMETRY SCRUBBER</span>
+          <div style="display:flex; gap:12px;">
+            <span style="font-family:var(--font-mono); font-size:11px; color:var(--text2);">Δt: <span id="scrubber-delta">0.000s</span></span>
+            <span id="scrubber-distance" style="font-family:var(--font-mono); font-size:11px; color:var(--text2);">0.0 m</span>
+          </div>
+        </div>
+        <div class="scrubber-body" style="display:flex; align-items:center; gap:16px; margin-bottom:12px;">
+          <input type="range" id="telemetry-slider" min="0" max="999" value="0" style="flex-grow:1; accent-color:var(--ver); cursor:pointer;">
+          <div class="scrubber-value" id="scrubber-index" style="width:48px; text-align:right; font-family:var(--font-mono); font-size:12px; color:var(--text2); background:rgba(255,255,255,0.03); padding:4px 8px; border-radius:4px; border:1px solid var(--border);">0</div>
+        </div>
+        
+        <!-- Live Readout -->
+        <div class="scrubber-readout" style="display:flex; justify-content:space-between; padding:8px 12px; background:rgba(255,255,255,0.02); border-radius:4px; border:1px solid rgba(255,255,255,0.05);">
+          <div style="display:flex; flex-direction:column; gap:4px; width:45%;">
+            <div style="font-family:var(--font-mono); font-size:10px; color:var(--ver); letter-spacing:0.05em; margin-bottom:2px;">DRIVER A</div>
+            <div style="display:flex; justify-content:space-between; font-size:12px; font-family:var(--font-mono); color:var(--text2);"><span>SPD:</span><span id="readout-spd-a">0 km/h</span></div>
+            <div style="display:flex; justify-content:space-between; font-size:12px; font-family:var(--font-mono); color:var(--text2);"><span>THR:</span><span id="readout-thr-a">0 %</span></div>
+            <div style="display:flex; justify-content:space-between; font-size:12px; font-family:var(--font-mono); color:var(--text2);"><span>BRK:</span><span id="readout-brk-a">0 %</span></div>
+            <div style="display:flex; justify-content:space-between; font-size:12px; font-family:var(--font-mono); color:var(--text2);"><span>GEAR:</span><span id="readout-gear-a">0</span></div>
+          </div>
+          <div style="width:1px; background:rgba(255,255,255,0.05);"></div>
+          <div style="display:flex; flex-direction:column; gap:4px; width:45%;">
+            <div style="font-family:var(--font-mono); font-size:10px; color:var(--ham); letter-spacing:0.05em; margin-bottom:2px;">DRIVER B</div>
+            <div style="display:flex; justify-content:space-between; font-size:12px; font-family:var(--font-mono); color:var(--text2);"><span>SPD:</span><span id="readout-spd-b">0 km/h</span></div>
+            <div style="display:flex; justify-content:space-between; font-size:12px; font-family:var(--font-mono); color:var(--text2);"><span>THR:</span><span id="readout-thr-b">0 %</span></div>
+            <div style="display:flex; justify-content:space-between; font-size:12px; font-family:var(--font-mono); color:var(--text2);"><span>BRK:</span><span id="readout-brk-b">0 %</span></div>
+            <div style="display:flex; justify-content:space-between; font-size:12px; font-family:var(--font-mono); color:var(--text2);"><span>GEAR:</span><span id="readout-gear-b">0</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT PANEL — Insight Drill-Down -->
+    <div class="right-panel">
+      <div class="panel-label">INSIGHT DRILL-DOWN</div>
+      <div id="drill-panel">
+        <!-- Empty state — replaced by insightList.js when insight selected -->
+        <div class="drill-empty">
+          <div class="drill-empty-icon">Δt</div>
+          <div class="drill-empty-label">Select an insight</div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /analysis-body -->
+</div><!-- /page-analysis -->
+
+
+<!--
+  BOOTSTRAP: Load router.js as an ES Module.
+  router.js imports all other modules as needed.
+  type="module" gives us ES module scope + deferred execution automatically.
+-->
+<script type="module" src="js/router.js"></script>
+
+</body>
+</html>

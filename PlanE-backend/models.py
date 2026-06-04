@@ -68,6 +68,18 @@ class AnalysisJobORM(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class TelemetryCacheRegistryORM(Base):
+    __tablename__ = "telemetry_cache_registry"
+    __table_args__ = (UniqueConstraint("season", "round", "session", name="uq_cache_registry"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    season: Mapped[int] = mapped_column(Integer, index=True)
+    round: Mapped[int] = mapped_column(Integer, index=True)
+    session: Mapped[str] = mapped_column(String(8))
+    status: Mapped[str] = mapped_column(String(16))
+    cached_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class Race(BaseModel):
     round: int
     name: str
@@ -205,3 +217,17 @@ class ExportFormat(str, Enum):
     csv = "csv"
     json = "json"
     pdf = "pdf"
+
+
+class CachedSessionResponse(BaseModel):
+    season: int
+    round: int
+    session: str
+    status: str
+    cached_at: datetime | None
+
+
+class CacheStatusResponse(BaseModel):
+    cached_sessions: list[CachedSessionResponse]
+    pending_sessions: list[dict[str, Any]]
+    last_preload_time: datetime | None

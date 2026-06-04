@@ -5,6 +5,9 @@ import io
 import logging
 import threading
 import uuid
+import asyncio
+import pandas as pd
+import fastf1
 from datetime import datetime
 from pathlib import Path
 
@@ -16,20 +19,26 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from config import get_settings
-from data_sources import RaceFilters, get_driver, get_race, list_drivers, list_races, get_session_drivers_fastf1, resolve_session_drivers
-from database import get_db, init_database, loads_json, read_telemetry_parquet
+from database import SessionLocal, get_db, init_database, loads_json, read_telemetry_parquet
 from models import (
     AnalysisJobORM,
     AnalysisRequest,
     AnalysisResult,
     Driver,
+    DriverORM,
     ErrorResponse,
     ExportFormat,
     Insight,
     JobResponse,
     JobStatus,
     Race,
+    RaceORM,
+    CacheStatusResponse,
+    CachedSessionResponse,
+    TelemetryCacheRegistryORM
 )
+from preloader import run_preload_cycle, SESSION_TYPES, SESSION_IDENTIFIERS
+from data_sources import RaceFilters, get_driver, get_race, list_drivers, list_races, get_session_drivers_fastf1, resolve_session_drivers
 from tasks import run_telemetry_analysis
 
 
@@ -51,14 +60,86 @@ app.add_middleware(
 )
 
 
+_last_preload_time = None
+
+async def preload_background_loop():
+    global _last_preload_time
+    while True:
+        try:
+            await asyncio.to_thread(run_preload_cycle)
+            _last_preload_time = datetime.utcnow()
+        except Exception as e:
+            logging.getLogger("uvicorn").error(f"Error in preload_background_loop: {e}")
+        
+        # Sleep for 60 minutes
+        await asyncio.sleep(60 * 60)
+
+
 @app.on_event("startup")
 def startup() -> None:
     init_database()
+    asyncio.create_task(preload_background_loop())
 
 
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok", "generated_at": datetime.utcnow().isoformat()}
+
+
+@app.get("/api/cache/status", response_model=CacheStatusResponse)
+def cache_status(db: Session = Depends(get_db)) -> dict:
+    year = datetime.utcnow().year
+    
+    records = db.execute(
+        select(TelemetryCacheRegistryORM)
+        .where(TelemetryCacheRegistryORM.season == year)
+    ).scalars().all()
+    
+    cached_sessions = [
+        {
+            "season": r.season,
+            "round": r.round,
+            "session": r.session,
+            "status": r.status,
+            "cached_at": r.cached_at
+        } for r in records
+    ]
+    
+    pending_sessions = []
+    try:
+        schedule = fastf1.get_event_schedule(year)
+        if not schedule.empty:
+            cached_set = {(r.round, r.session) for r in records if r.status == "CACHED"}
+            for _, event in schedule.iterrows():
+                round_num = event["RoundNumber"]
+                if round_num == 0:
+                    continue
+                for session_name in SESSION_TYPES:
+                    try:
+                        session_date = event.get_session_date(session_name)
+                        if session_date is None or pd.isna(session_date):
+                            continue
+                        if session_date.tzinfo is not None:
+                            session_date = session_date.tz_convert("UTC").tz_localize(None)
+                        
+                        if session_date < datetime.utcnow():
+                            session_id = SESSION_IDENTIFIERS.get(session_name, session_name)
+                            if (round_num, session_id) not in cached_set:
+                                pending_sessions.append({
+                                    "season": year,
+                                    "round": round_num,
+                                    "session": session_id,
+                                })
+                    except ValueError:
+                        pass
+    except Exception:
+        pass
+        
+    return {
+        "cached_sessions": cached_sessions,
+        "pending_sessions": pending_sessions,
+        "last_preload_time": _last_preload_time
+    }
 
 
 @app.get("/api/seasons", response_model=list[int])

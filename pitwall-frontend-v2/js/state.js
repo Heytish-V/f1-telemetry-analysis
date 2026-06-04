@@ -107,7 +107,7 @@ const AppState = {
   currentPage: 'landing',
 
   // ── Session Selector filters ─────────────────────────────────────────
-  currentYear:          2023,
+  currentYear:          2026,
   currentCircuitFilter: 'all',
   currentSearch:        '',
 

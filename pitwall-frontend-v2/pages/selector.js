@@ -24,7 +24,7 @@ import { getState, setState, resetSelection, RACES_2023, DRIVERS_2023 } from '..
 
 // ── STATIC FILTER DEFINITIONS ────────────────────────────────────────────
 
-const YEARS         = [2024, 2023, 2022, 2021, 2020, 2019, 2018];
+const YEARS         = [2026, 2025, 2024, 2023, 2022, 2021, 2020, 2019, 2018];
 
 const CIRCUIT_TYPES = [
   { label: 'All circuits', value: 'all'       },
@@ -92,7 +92,7 @@ function buildFilterGroup(sectionId, items, filterKey) {
     const isActive =
       (filterKey === 'year'        && item.value === currentYear)          ||
       (filterKey === 'circuitType' && item.value === currentCircuitFilter) ||
-      (filterKey === 'year'        && i === 0 && currentYear === 2023);
+      (filterKey === 'year'        && i === 0 && currentYear === 2026);
     if (isActive) btn.classList.add('active');
 
     btn.addEventListener('click', () => onFilterClick(btn, filterKey, item.value));

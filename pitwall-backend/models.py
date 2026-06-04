@@ -87,7 +87,7 @@ class Driver(BaseModel):
 
 
 class AnalysisRequest(BaseModel):
-    year: int = Field(ge=2018, le=2024)
+    year: int = Field(ge=2018, le=2026)
     round: int = Field(ge=1, le=30)
     session: str = Field(pattern=r"^(FP1|FP2|FP3|Q|Q1|Q2|Q3|R|S|SQ)$")
     driver_a: str = Field(min_length=2, max_length=3)

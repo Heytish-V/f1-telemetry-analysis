@@ -63,7 +63,7 @@ def health() -> dict:
 
 @app.get("/api/seasons", response_model=list[int])
 def seasons() -> list[int]:
-    return list(range(2018, 2025))
+    return list(range(2018, 2027))
 
 
 @app.get("/api/seasons/{year}/races", response_model=list[Race])
@@ -236,8 +236,8 @@ def delete_analysis(job_id: str, db: Session = Depends(get_db)) -> Response:
 
 
 def _validate_year(year: int) -> None:
-    if year < 2018 or year > 2024:
-        raise HTTPException(status_code=422, detail="Supported seasons are 2018 through 2024")
+    if year < 2018 or year > 2026:
+        raise HTTPException(status_code=422, detail="Supported seasons are 2018 through 2026")
 
 
 def _cache_key(request: AnalysisRequest) -> str:

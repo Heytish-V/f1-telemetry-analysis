@@ -1,45 +1,82 @@
-# F1 Telemetry Project Overview
+# Plan E F1 Telemetry Project Overview (In-Depth)
 
-This project is divided into a **Python FastAPI backend** and a **Vanilla JavaScript frontend**. Below is a summary of every file in the project and its role in the architecture.
+This document provides a comprehensive technical breakdown of the **Plan E** architecture. The project consists of a Python FastAPI/Celery backend for heavy data crunching and a Vanilla JavaScript Single Page Application (SPA) for the frontend visualization.
 
-## Backend (`pitwall-backend/`)
+---
 
-The backend is responsible for fetching, processing, and analyzing Formula 1 telemetry data. It provides a RESTful API and uses Celery for background processing.
+## 1. Backend (`PlanE-backend/`)
 
-- **`main.py`**: The entry point for the FastAPI application. It defines the REST API endpoints (e.g., fetching seasons, races, drivers, and submitting analysis jobs) and routes requests to the appropriate functions or background tasks.
-- **`analysis_engine.py`**: The core data science and analytics engine. It takes raw telemetry data, aligns it by distance, calculates the delta time between drivers, and uses heuristics/statistics to generate "insights" (like late braking, better corner exit speed, etc.).
-- **`data_sources.py`**: Handles all the logic for retrieving data from external APIs (FastF1, OpenF1) and the local SQLite database. This includes fetching session metadata, driver lists, and raw telemetry DataFrames.
-- **`tasks.py`**: Contains Celery task definitions. Heavy data processing (like running a full telemetry comparison) is offloaded to a background task here so it doesn't block the API.
-- **`models.py`**: Defines Pydantic data models used for API request validation, response serialization, and internal data structures (e.g., `AnalysisJob`, `Driver`, `Insight`).
-- **`database.py`**: Sets up the SQLite database connection, session management, and SQLAlchemy base classes. 
-- **`config.py`**: Manages environment variables and application configuration settings (like Redis URL, database path).
-- **`pitwall.db`**: The local SQLite database file that caches race calendars, driver mappings, and other metadata to speed up lookups.
-- **`requirements.txt`**: Lists all Python dependencies required to run the backend (FastAPI, Celery, FastF1, pandas, etc.).
+The backend is built around a decoupled architecture where the API server handles requests instantly, while heavy telemetry processing is offloaded to background workers.
 
-## Frontend (`pitwall-frontend-v2/`)
+### API & Routing Layer
+- **`main.py`**
+  The FastAPI entry point. It configures CORS and sets up the database connection on startup.
+  - Exposes metadata endpoints: `/api/seasons`, `/api/seasons/{year}/races`, `/api/seasons/{year}/races/{round_num}/drivers`. These endpoints validate input parameters (using Pydantic `Field` bounds, e.g., year up to 2026) and query the SQLite database.
+  - The `/api/analysis` endpoint takes an `AnalysisRequest`, generates a unique cache key, creates an `AnalysisJobORM` record with a `PENDING` status, and dispatches a Celery task (`run_analysis_task.delay()`). It immediately returns a `job_id` and a polling URL to the client.
 
-The frontend is a lightweight Single Page Application (SPA) built with Vanilla JavaScript, HTML, and CSS (no React or Vue). 
+- **`models.py`**
+  The unified data definition layer.
+  - **SQLAlchemy ORM**: Defines `RaceORM`, `DriverORM`, and `AnalysisJobORM` for SQLite storage. The `AnalysisJobORM` tracks the task lifecycle (`status`, `progress`, `error`) and stores the final JSON payload.
+  - **Pydantic API Schemas**: Validates incoming data (e.g., ensuring `driver_a` and `driver_b` are different) and defines the rigorous structure for the final output (`AnalysisResult`, `ChartData`, `Insight`, `MiniTrace`).
 
-- **`index.html`**: The single HTML shell for the entire application. It contains the structural DOM elements for the landing page, session selector, and analysis dashboard. All dynamic content is injected into this shell.
-- **`dev_server.py`**: A small Python script to serve the frontend files locally during development.
+### Data Acquisition Layer
+- **`data_sources.py`**
+  The bridge between external F1 APIs and the internal engine.
+  - Uses the `FastF1` library to download official F1 telemetry, lap timings, and weather data. 
+  - Interfaces with the `OpenF1` API as a fallback to resolve driver codes (e.g., "VER") to names, teams, and car numbers.
+  - Handles caching: To avoid hitting FastF1's servers redundantly, it configures a local filesystem cache (sometimes leveraging Parquet/DuckDB structures).
 
-### Pages (`pages/`)
-These modules control the high-level rendering and interaction for each "screen" of the app.
-- **`selector.js`**: Manages the Session Selector page. It handles filtering, rendering the race grid, selecting sessions, fetching driver lists, and choosing the two drivers to compare.
-- **`analysis.js`**: Manages the Analysis Dashboard. Once an analysis job is complete, this file populates the dashboard, rendering the lap summary, sector breakdown, track map, and orchestrating the various charts.
-- **`loading.js`**: Handles the transition state when an analysis job is submitted. It polls the backend API for task status and updates the loading overlay until the data is ready.
+### Analytics & Data Science Layer
+- **`analysis_engine.py`**
+  The core of the project. F1 telemetry is recorded chronologically, but cars traverse the track at different speeds. To compare two drivers, their data must be aligned spatially.
+  - **Distance-Grid Alignment**: Uses `scipy.interpolate.interp1d` to resample both drivers' telemetry channels (Speed, Throttle, Brake, Gear, X/Y coordinates) onto a standardized 1,000-point track distance array.
+  - **Cumulative Delta Time Calculation**: Reconstructs the time difference purely from spatial velocity. By calculating the time taken to cross each micro-segment `Δt = Σ(ds / v)`, it generates the exact cumulative delta array.
+  - **Ensemble Lap Selection**: Filters out in-laps, out-laps, and anomalously slow laps. It selects 3–5 "representative laps" per driver and averages them to ensure the insights aren't skewed by a single lock-up or traffic.
+  - **Heuristic Detectors**: Scans the aligned arrays to pinpoint areas where one driver gained significant time. 
+    - *Late Braking*: Finds points where Brake > 0% and compares the distance of application.
+    - *Exit Speed*: Looks at the minimum speed at the apex and the rate of acceleration out of the corner.
+    - *Throttle Ramp*: Measures how aggressively a driver applies the throttle (e.g., 38% vs 30% per 100m).
+  - Translates these statistical anomalies into structured `Insight` objects, complete with confidence scores and dual-audience text (casual narratives vs. hard statistical data).
 
-### State & Core Logic (`js/`)
-- **`state.js`**: The single source of truth for the frontend application state. It holds the currently selected race, drivers, current analysis results, and filters.
-- **`api.js`**: A wrapper for all network requests to the backend. It handles fetching data and provides fallback mechanisms.
-- **`router.js`**: A minimal client-side router that manages navigation between the landing page, selector page, and analysis dashboard by toggling CSS classes on the main containers.
+### Background Processing & Infrastructure
+- **`tasks.py`**
+  The Celery worker module. It receives the `job_id`, updates the database status to `RUNNING`, fetches the data via `data_sources.py`, and feeds it into `analysis_engine.py`. Upon completion, it serializes the `AnalysisResult` Pydantic model into a JSON string and saves it back to the database, marking the job as `COMPLETED`.
+- **`database.py`** & **`config.py`**
+  Manages the synchronous SQLite engine (`pitwall.db`) connection pool and loads environment variables (like the Redis broker URL for Celery).
 
-### UI Components & Charts (`components/`)
-These modules are responsible for rendering specific visualizations, primarily using SVG manipulation.
-- **`deltaChart.js`**: Renders the Cumulative Delta Time chart (the main chart showing time gained/lost across the lap distance).
-- **`speedChart.js`**: Renders the overlapping Speed Trace for both drivers.
-- **`throttleChart.js` & `brakeChart.js` & `gearChart.js`**: Render the driver inputs (throttle %, brake %, and gear selection) aligned with the telemetry distance scrubber.
-- **`trackMap.js`**: Draws the circuit layout and places a dot to indicate where the car is on track based on the telemetry scrubber position.
-- **`waterfallChart.js`**: Renders the sector-by-sector time difference waterfall chart.
-- **`lapSummary.js`**: Renders the high-level summary cards (e.g., fastest lap times, tire compounds used).
-- **`insightList.js`**: Renders the list of detected insights on the left panel and populates the drill-down details when an insight is clicked.
+---
+
+## 2. Frontend (`PlanE-frontend/`)
+
+The frontend is a bespoke, dependency-free Vanilla JS architecture designed for maximum performance and explicit DOM control.
+
+### Core Architecture
+- **`index.html`**
+  The static DOM shell. Instead of loading new pages, the application transitions between hidden/visible `<div>` containers (`#page-landing`, `#page-selector`, `#page-analysis`). It contains the raw SVG definitions for the landing page teaser and all the chart containers.
+- **`js/state.js`**
+  A centralized, mutable singleton (`AppState`) that holds the entire UI state (e.g., `currentYear`, `selectedDriverA`, `currentAnalysis` JSON payload). It exposes `getState()` and `setState()` functions. This strictly enforces a one-way data flow and prevents components from querying the DOM for state.
+- **`js/api.js`**
+  Provides `apiGet` and `apiPost`. It prefixes logs with `[PLAN E]`, handles `fetch()` execution, throws detailed errors for non-200 responses, and reads the API Base URL from `localStorage` to allow easy local debugging.
+- **`js/router.js`**
+  A minimal routing engine that listens to UI events and toggles the `.active` class on the top-level page containers.
+
+### Orchestration & Polling
+- **`pages/selector.js`**
+  Manages the multi-step selection funnel. When the user selects a year (e.g., 2026), it fetches the races. Clicking a session pill triggers a dynamic fetch of the drivers who actually participated in *that specific session*. It handles the complex logic of allowing the user to pick exactly two drivers before enabling the "Run Analysis" button.
+- **`pages/loading.js`**
+  Takes over when "Run Analysis" is clicked. It sends the POST request to `/api/analysis` and begins a recursive `setTimeout` loop, polling the returned `/api/analysis/{job_id}/status` URL. It parses the `progress` float from the backend to animate the loading bar, finally triggering the router to switch to the dashboard when status is `COMPLETED`.
+- **`pages/analysis.js`**
+  The master controller for the dashboard. It receives the massive JSON payload and distributes it. It also manages the global **"Casual vs Analyst" mode toggle** (showing/hiding advanced metrics) and binds the global **Telemetry Scrubber**. When the user drags the scrubber, this module reads the 0-999 index and simultaneously updates the readouts (SPD, THR, BRK, GEAR) for both drivers by looking up the arrays in `ChartData`.
+
+### Visualization Components (`components/`)
+These modules consume arrays from the `ChartData` object and manipulate the DOM/SVG elements directly.
+- **`deltaChart.js`**
+  Draws the primary Cumulative Delta line. It maps the 1,000-point delta array onto an SVG path, applying gradient fills based on whether the delta is positive (Driver A ahead) or negative (Driver B ahead). It also parses the `Insight` objects and overlays clickable dots at the exact distance where an insight occurred.
+- **`trackMap.js`**
+  Renders the 2D layout of the circuit using the `x_a` and `y_a` coordinate arrays. It places a moving indicator dot that subscribes to the Telemetry Scrubber index, allowing the user to see exactly where on the track a specific delta was gained.
+- **`speedChart.js`, `throttleChart.js`, `brakeChart.js`, `gearChart.js`**
+  These components generate overlay line charts comparing Driver A and Driver B. They calculate the min/max bounds of the data to dynamically scale the Y-axis (e.g., 0-350 km/h for speed, 0-8 for gear) and plot the arrays across the X-axis (track distance).
+- **`waterfallChart.js`**
+  Visualizes the sector-by-sector time differences as a classic waterfall chart, making it easy to see which sector contributed most to the overall lap time gap.
+- **`lapSummary.js` & `insightList.js`**
+  Dynamically generates HTML fragments to display text data. `insightList.js` populates the right-hand "Drill-Down" panel when an insight is clicked, formatting the statistical arrays (`conf`, `laps`, `stats`) into clean tables or casual sentences based on the active UI mode.

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import gc
+import os
 import time
 from datetime import datetime
 import logging
+import psutil
 
 from celery import Celery
 from sqlalchemy import select
@@ -22,35 +24,24 @@ celery_app.conf.update(task_track_started=True, result_expires=86400)
 
 # ── Memory instrumentation ────────────────────────────────────────────────
 
-def _get_process():
-    """Return psutil.Process if available, else None."""
-    try:
-        import psutil
-        return psutil.Process()
-    except ImportError:
-        return None
-
-
-def _log_memory(process, label: str) -> None:
+def _log_memory(label: str) -> None:
     """Log RSS and VMS memory for the current process."""
-    if process is None:
-        return
     try:
+        process = psutil.Process(os.getpid())
         mem = process.memory_info()
         logger.info(
             "[MEMORY] %s — RSS: %.1f MB, VMS: %.1f MB",
             label, mem.rss / (1024 * 1024), mem.vms / (1024 * 1024),
         )
     except Exception:
-        pass
+        logger.exception("Memory logging failed")
 
 
 # ── Celery task ───────────────────────────────────────────────────────────
 
 @celery_app.task(bind=True, name="pitwall.run_telemetry_analysis")
 def run_telemetry_analysis(self, job_id: str) -> dict:
-    process = _get_process()
-    _log_memory(process, f"job {job_id} — start")
+    _log_memory(f"job {job_id} — start")
     t_start = time.perf_counter()
 
     db = SessionLocal()
@@ -78,13 +69,13 @@ def run_telemetry_analysis(self, job_id: str) -> dict:
             request.year, request.round, request.session, request.driver_a, request.driver_b
         )
 
-        grid_a, grid_b, lap_a, lap_b, rep_a, rep_b = _fastf1_grids(request, process)
+        grid_a, grid_b, lap_a, lap_b, rep_a, rep_b = _fastf1_grids(request)
 
         job.progress = 0.65
         job.updated_at = datetime.utcnow()
         db.commit()
 
-        _log_memory(process, f"job {job_id} — before build_analysis_result")
+        _log_memory(f"job {job_id} — before build_analysis_result")
         t_build = time.perf_counter()
 
         result, telemetry_df = build_analysis_result(
@@ -113,7 +104,7 @@ def run_telemetry_analysis(self, job_id: str) -> dict:
         db.commit()
 
         elapsed = time.perf_counter() - t_start
-        _log_memory(process, f"job {job_id} — completed in {elapsed:.1f}s")
+        _log_memory(f"job {job_id} — completed in {elapsed:.1f}s")
         logger.info("Analysis job %s completed in %.1fs", job_id, elapsed)
 
         return {"job_id": job_id, "status": JobStatus.completed.value}
@@ -131,14 +122,13 @@ def run_telemetry_analysis(self, job_id: str) -> dict:
     finally:
         db.close()
         gc.collect()
-        _log_memory(process, f"job {job_id} — after gc.collect")
+        _log_memory(f"job {job_id} — after gc.collect")
 
 
 # ── FastF1 data loading ──────────────────────────────────────────────────
 
 def _fastf1_grids(
     request: AnalysisRequest,
-    process=None,
 ) -> tuple[dict, dict, float, float, list[int], list[int]]:
     """Load FastF1 session data and build aligned distance grids.
 
@@ -164,7 +154,7 @@ def _fastf1_grids(
     session = fastf1.get_session(request.year, request.round, session_code)
 
     # ── Step 1: Load session with telemetry (required for get_telemetry) ──
-    _log_memory(process, "before session.load")
+    _log_memory("before session.load")
     t0 = time.perf_counter()
     session.load(telemetry=True, weather=False, messages=False, laps=True)
     load_time = time.perf_counter() - t0
@@ -172,7 +162,7 @@ def _fastf1_grids(
         "session.load(telemetry=True) for %s R%d %s took %.1fs",
         request.year, request.round, session_code, load_time,
     )
-    _log_memory(process, "after session.load (peak)")
+    _log_memory("after session.load (peak)")
 
     # ── Step 2: Pick fastest laps ─────────────────────────────────────────
     laps_a = session.laps.pick_driver(request.driver_a).pick_quicklaps()
@@ -187,7 +177,7 @@ def _fastf1_grids(
     fastest_b = laps_b.pick_fastest()
 
     # ── Step 3: Extract telemetry for the 2 fastest laps only ─────────────
-    _log_memory(process, "before get_telemetry")
+    _log_memory("before get_telemetry")
     t1 = time.perf_counter()
 
     try:
@@ -232,7 +222,7 @@ def _fastf1_grids(
     # going forward (~10 MB total), so delete everything else.
     del session, laps_a, laps_b, fastest_a, fastest_b
     gc.collect()
-    _log_memory(process, "after session cleanup + gc.collect")
+    _log_memory("after session cleanup + gc.collect")
 
     # ── Step 6: Align onto distance grid ──────────────────────────────────
     grid_a, grid_b = align_distance_grid(tel_a, tel_b)

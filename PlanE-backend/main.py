@@ -5,6 +5,11 @@ import gc
 import io
 import logging
 import threading
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 import uuid
 import asyncio
 import pandas as pd

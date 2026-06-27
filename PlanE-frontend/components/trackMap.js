@@ -55,9 +55,15 @@ export function renderTrackMap(charts, A, B) {
   if (!svg) return;
 
   // Use API coordinates if present, otherwise fall back to synthetic loop
-  const coords = (charts && charts.x_a && charts.x_a.length) 
+  let coords = (charts && charts.x_a && charts.x_a.length) 
     ? { x_a: charts.x_a, y_a: charts.y_a, x_b: charts.x_b, y_b: charts.y_b } 
     : generateDemoCoordinates();
+
+  // If position data was unavailable, the backend returns all 0s. 
+  // Gracefully degrade by falling back to the sleek synthetic track.
+  if (coords.x_a && coords.x_a.length > 0 && !coords.x_a.some(x => x !== 0)) {
+    coords = generateDemoCoordinates();
+  }
 
   const { x_a, y_a, x_b, y_b } = coords;
 
@@ -69,9 +75,9 @@ export function renderTrackMap(charts, A, B) {
   const minY = Math.min(...allY);
   const maxY = Math.max(...allY);
 
-  const rangeX = maxX - minX;
-  const rangeY = maxY - minY;
-  const maxRange = Math.max(rangeX, rangeY, 0.001);
+  const rangeX = Math.max(maxX - minX, 0.001);
+  const rangeY = Math.max(maxY - minY, 0.001);
+  const maxRange = Math.max(rangeX, rangeY);
 
   // 2. Map coordinates into 300x240 SVG viewbox with standard padding
   const W = 300;

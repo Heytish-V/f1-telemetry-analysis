@@ -24,7 +24,7 @@
 //   localStorage.setItem('PLAN_E_API_BASE', 'http://my-server:8000/api')
 //
 export const API_BASE =
-  localStorage.getItem('PLAN_E_API_BASE') || 'https://f1-telemetry-analysis.onrender.com/api';
+  localStorage.getItem('PLAN_E_API_BASE') || 'http://127.0.0.1:8000/api';
 
 
 // ── CORE FETCH HELPERS ───────────────────────────────────────────────────

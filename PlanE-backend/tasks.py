@@ -7,6 +7,7 @@ from datetime import datetime
 import logging
 import psutil
 
+import pandas as pd
 from celery import Celery
 from sqlalchemy import select
 
@@ -44,6 +45,8 @@ def run_telemetry_analysis(self, job_id: str) -> dict:
     _log_memory(f"job {job_id} — start")
     t_start = time.perf_counter()
 
+    # ── Session 1: Read metadata, mark RUNNING, close immediately ─────
+    # The DB session must NOT stay open during the long FastF1 download.
     db = SessionLocal()
     try:
         job = db.scalar(select(AnalysisJobORM).where(AnalysisJobORM.job_id == job_id))
@@ -64,16 +67,28 @@ def run_telemetry_analysis(self, job_id: str) -> dict:
         race = get_race(db, request.year, request.round)
         if not race:
             raise RuntimeError("Race metadata is unavailable")
-            
-        driver_a, driver_b = resolve_session_drivers(
-            request.year, request.round, request.session, request.driver_a, request.driver_b
-        )
+    finally:
+        db.close()
 
+    # ── No DB session open: resolve drivers (may hit FastF1 cache) ────
+    driver_a, driver_b = resolve_session_drivers(
+        request.year, request.round, request.session, request.driver_a, request.driver_b
+    )
+
+    # ── No DB session open: heavy FastF1 download + analysis ──────────
+    try:
         grid_a, grid_b, lap_a, lap_b, rep_a, rep_b = _fastf1_grids(request)
 
-        job.progress = 0.65
-        job.updated_at = datetime.utcnow()
-        db.commit()
+        # Brief session to update progress
+        db2 = SessionLocal()
+        try:
+            job = db2.scalar(select(AnalysisJobORM).where(AnalysisJobORM.job_id == job_id))
+            if job is not None:
+                job.progress = 0.65
+                job.updated_at = datetime.utcnow()
+                db2.commit()
+        finally:
+            db2.close()
 
         _log_memory(f"job {job_id} — before build_analysis_result")
         t_build = time.perf_counter()
@@ -94,14 +109,21 @@ def run_telemetry_analysis(self, job_id: str) -> dict:
 
         logger.info("build_analysis_result took %.1fs", time.perf_counter() - t_build)
 
+        # ── Session 2: Write results ──────────────────────────────────
         parquet_path = write_parquet(telemetry_df, job_id)
-        job.status = JobStatus.completed.value
-        job.progress = 1.0
-        job.parquet_path = str(parquet_path)
-        job.result_json = result.model_dump_json()
-        job.completed_at = datetime.utcnow()
-        job.updated_at = datetime.utcnow()
-        db.commit()
+        db3 = SessionLocal()
+        try:
+            job = db3.scalar(select(AnalysisJobORM).where(AnalysisJobORM.job_id == job_id))
+            if job is not None:
+                job.status = JobStatus.completed.value
+                job.progress = 1.0
+                job.parquet_path = str(parquet_path)
+                job.result_json = result.model_dump_json()
+                job.completed_at = datetime.utcnow()
+                job.updated_at = datetime.utcnow()
+                db3.commit()
+        finally:
+            db3.close()
 
         elapsed = time.perf_counter() - t_start
         _log_memory(f"job {job_id} — completed in {elapsed:.1f}s")
@@ -111,16 +133,20 @@ def run_telemetry_analysis(self, job_id: str) -> dict:
 
     except Exception as exc:
         logger.exception("Analysis job %s FAILED", job_id)
-        job = db.scalar(select(AnalysisJobORM).where(AnalysisJobORM.job_id == job_id))
-        if job is not None:
-            job.status = JobStatus.failed.value
-            job.error = str(exc)
-            job.updated_at = datetime.utcnow()
-            job.result_json = dumps_json({"job_id": job_id, "status": JobStatus.failed.value, "error": str(exc)})
-            db.commit()
+        # ── Error session: mark job as FAILED ─────────────────────────
+        db_err = SessionLocal()
+        try:
+            job = db_err.scalar(select(AnalysisJobORM).where(AnalysisJobORM.job_id == job_id))
+            if job is not None:
+                job.status = JobStatus.failed.value
+                job.error = str(exc)
+                job.updated_at = datetime.utcnow()
+                job.result_json = dumps_json({"job_id": job_id, "status": JobStatus.failed.value, "error": str(exc)})
+                db_err.commit()
+        finally:
+            db_err.close()
         raise
     finally:
-        db.close()
         gc.collect()
         _log_memory(f"job {job_id} — after gc.collect")
 
@@ -165,12 +191,36 @@ def _fastf1_grids(
     _log_memory("after session.load (peak)")
 
     # ── Step 2: Pick fastest laps ─────────────────────────────────────────
+    # Try quick laps first; fall back to all valid laps for drivers who
+    # completed laps but none within the "quick" threshold (e.g. 107%).
     laps_a = session.laps.pick_driver(request.driver_a).pick_quicklaps()
+    if len(laps_a) == 0:
+        all_laps_a = session.laps.pick_driver(request.driver_a)
+        laps_a = all_laps_a[all_laps_a["LapTime"].notna()]
+        if len(laps_a) > 0:
+            logger.warning(
+                "%s has no quick laps — falling back to %d valid laps",
+                request.driver_a, len(laps_a),
+            )
+
     laps_b = session.laps.pick_driver(request.driver_b).pick_quicklaps()
+    if len(laps_b) == 0:
+        all_laps_b = session.laps.pick_driver(request.driver_b)
+        laps_b = all_laps_b[all_laps_b["LapTime"].notna()]
+        if len(laps_b) > 0:
+            logger.warning(
+                "%s has no quick laps — falling back to %d valid laps",
+                request.driver_b, len(laps_b),
+            )
+
     if len(laps_a) == 0 or len(laps_b) == 0:
+        missing = []
+        if len(laps_a) == 0:
+            missing.append(request.driver_a)
+        if len(laps_b) == 0:
+            missing.append(request.driver_b)
         raise RuntimeError(
-            f"No quick laps available — {request.driver_a}: {len(laps_a)} laps, "
-            f"{request.driver_b}: {len(laps_b)} laps"
+            f"Driver(s) {', '.join(missing)} retired before recording a representative lap."
         )
 
     fastest_a = laps_a.pick_fastest()
@@ -180,8 +230,46 @@ def _fastf1_grids(
     _log_memory("before get_telemetry")
     t1 = time.perf_counter()
 
+    is_race = request.session in {"R", "S"}
+
+    def safe_get_telemetry(lap):
+        try:
+            if is_race:
+                # Explicitly use get_car_data for Race sessions to avoid massive merge overhead and OOMs
+                tel = lap.get_car_data().add_distance()
+            else:
+                tel = lap.get_telemetry()
+                
+            # Gracefully handle missing position data for track-map features.
+            # Car data is 10 Hz, GPS position data is 4 Hz — exact timestamp
+            # matching produces almost all NaN.  Use merge_asof with
+            # direction="nearest" to match each car sample to the closest GPS
+            # sample (typically <50 ms apart).
+            if "X" not in tel.columns or "Y" not in tel.columns:
+                try:
+                    pos = lap.get_pos_data()
+                    tel = tel.sort_values("Time")
+                    pos = pos[["Time", "X", "Y", "Z"]].sort_values("Time")
+                    tel = pd.merge_asof(tel, pos, on="Time", direction="nearest")
+                except Exception as pos_exc:
+                    logger.warning(f"Position data unavailable for lap {lap.LapNumber}: {pos_exc}")
+                    tel["X"] = 0
+                    tel["Y"] = 0
+                    tel["Z"] = 0
+                    
+            # Fill any remaining NaNs in coordinate columns so Pydantic
+            # serialisation doesn't choke on float('nan').
+            for col in ["X", "Y", "Z"]:
+                if col in tel.columns:
+                    tel[col] = tel[col].fillna(0)
+            
+            return tel
+        except Exception as e:
+            logger.error(f"Failed to extract telemetry data: {e}")
+            raise RuntimeError(f"Telemetry unavailable (upstream API error or missing data).") from e
+
     try:
-        tel_a = fastest_a.get_telemetry()
+        tel_a = safe_get_telemetry(fastest_a)
     except Exception:
         logger.exception(
             "Failed to load telemetry for %s (lap %s)",
@@ -193,7 +281,7 @@ def _fastf1_grids(
         )
 
     try:
-        tel_b = fastest_b.get_telemetry()
+        tel_b = safe_get_telemetry(fastest_b)
     except Exception:
         logger.exception(
             "Failed to load telemetry for %s (lap %s)",
@@ -226,6 +314,10 @@ def _fastf1_grids(
 
     # ── Step 6: Align onto distance grid ──────────────────────────────────
     grid_a, grid_b = align_distance_grid(tel_a, tel_b)
+
+    # Free the raw telemetry DataFrames (~5 MB each) now that we have the
+    # compact grid dicts (~1 MB each).
+    del tel_a, tel_b
 
     return grid_a, grid_b, lap_a, lap_b, rep_a, rep_b
 

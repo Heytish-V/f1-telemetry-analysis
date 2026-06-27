@@ -291,9 +291,14 @@ def get_session_drivers_fastf1(year: int, round_num: int, session_code: str) -> 
 
     quicklaps = session.laps.pick_quicklaps()
     if quicklaps.empty:
-        return []
-        
-    valid_driver_codes = set(quicklaps['Driver'].unique())
+        # Fall back to all laps with a valid LapTime — drivers who completed
+        # laps but none within the "quick" threshold should still be selectable.
+        valid_laps = session.laps[session.laps["LapTime"].notna()]
+        if valid_laps.empty:
+            return []
+        valid_driver_codes = set(valid_laps['Driver'].unique())
+    else:
+        valid_driver_codes = set(quicklaps['Driver'].unique())
     
     res = session.results
     drivers = []

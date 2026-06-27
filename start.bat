@@ -5,7 +5,7 @@ echo =========================================
 
 echo.
 echo Starting Backend (FastAPI)...
-start "PlanE Backend" cmd /k "cd PlanE-backend && IF EXIST .venv\Scripts\activate (call .venv\Scripts\activate && echo Virtual environment activated.) ELSE (echo WARNING: No .venv found! If you haven't yet, you may need to set one up and install requirements.) && python -m uvicorn main:app --reload --port 8000"
+start "PlanE Backend" cmd /k "cd PlanE-backend && if exist .venv\Scripts\python.exe (.venv\Scripts\python.exe -m uvicorn main:app --reload --port 8000) else (echo WARNING: No .venv found! Please set one up first. & pause & exit)"
 
 echo.
 echo Starting Frontend (Vanilla JS)...

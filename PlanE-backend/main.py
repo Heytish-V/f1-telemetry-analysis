@@ -86,9 +86,12 @@ def _check_redis_health() -> bool:
     try:
         import redis as redis_lib
         client = redis_lib.from_url(settings.redis_url, socket_connect_timeout=3)
-        client.ping()
-        logger.info("✓ Redis is reachable at %s", settings.redis_url.split("@")[-1])
-        return True
+        try:
+            client.ping()
+            logger.info("✓ Redis is reachable at %s", settings.redis_url.split("@")[-1])
+            return True
+        finally:
+            client.close()
     except Exception as exc:
         logger.warning("✗ Redis unreachable (%s) — Celery tasks will not dispatch", exc)
         return False
@@ -301,18 +304,28 @@ def create_analysis(request: AnalysisRequest, db: Session = Depends(get_db)) -> 
     return JobResponse(job_id=job_id, status=JobStatus.pending, cached=False, poll_url=f"/api/analysis/{job_id}")
 
 
+# Limit concurrent heavy telemetry loads when running in threaded fallback
+# mode (no Redis/Celery).  session.load(telemetry=True) consumes 300-800 MB.
+# Without this gate, two concurrent requests would exceed 512 MB deploy
+# targets and trigger an OOM kill of the entire Uvicorn process.
+_analysis_semaphore = threading.Semaphore(1)
+
+
 def _run_analysis_in_thread(job_id: str) -> None:
     """Execute analysis in a background thread.
 
-    Includes explicit garbage collection after completion to free
+    Acquires a semaphore to ensure only one heavy FastF1 load runs at a
+    time.  Includes explicit garbage collection after completion to free
     FastF1 DataFrames and keep memory usage within Render Hobby limits.
     """
+    _analysis_semaphore.acquire()
     try:
         run_telemetry_analysis(job_id)
         logger.info("Background thread analysis completed for job %s", job_id)
     except Exception:
         logger.exception("Background thread analysis FAILED for job %s", job_id)
     finally:
+        _analysis_semaphore.release()
         gc.collect()
         logger.info("GC collect completed after job %s", job_id)
 
